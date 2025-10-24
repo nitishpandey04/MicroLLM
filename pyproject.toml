@@ -1,0 +1,9 @@
+[project]
+name = "microllm"
+version = "0.1.0"
+description = "small language models research"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.9.0",
+]
