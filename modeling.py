@@ -3,20 +3,25 @@ import torch.nn as nn
 import torch
 
 
+class MicroLLMConfig:
+    def __init__(self):
+        self.num_layers = 6
+        self.hidden_dim = 64
+        self.attn_dropout = 0.1
+        self.attn_scale = self.hidden_dim ** -0.5
+        self.vocab_size = 32000
+        self.label_smoothing_factor = 0.1
+        self.init_std = 0.02
 
-class MicroLLMConfig(dict):
-    def __getattr__(self, attr):
-        return self[attr]
 
-
-
+# rope
 class MLPLayer(nn.Module):
     def __init__(self, config: MicroLLMConfig) -> None:
         super().__init__()
         self.config = config
-        self.up_proj = nn.Linear(config.hidden_dim, 4 * config.hidden_dim)
+        self.up_proj = nn.Linear(config.hidden_dim, 4 * config.hidden_dim, bias=False)
         self.act_fn = nn.ReLU()
-        self.down_proj = nn.Linear(4 * config.hidden_dim, config.hidden_dim)
+        self.down_proj = nn.Linear(4 * config.hidden_dim, config.hidden_dim, bias=False)
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         return self.down_proj(self.act_fn(self.up_proj(inputs)))
@@ -26,10 +31,10 @@ class AttentionLayer(nn.Module):
     def __init__(self, config: MicroLLMConfig) -> None:
         super().__init__()
         self.config = config
-        self.q_proj = nn.Linear(config.hidden_dim, config.hidden_dim)
-        self.k_proj = nn.Linear(config.hidden_dim, config.hidden_dim)
-        self.v_proj = nn.Linear(config.hidden_dim, config.hidden_dim)
-        self.out_proj = nn.Linear(config.hidden_dim, config.hidden_dim)
+        self.q_proj = nn.Linear(config.hidden_dim, config.hidden_dim, bias=False)
+        self.k_proj = nn.Linear(config.hidden_dim, config.hidden_dim, bias=False)
+        self.v_proj = nn.Linear(config.hidden_dim, config.hidden_dim, bias=False)
+        self.out_proj = nn.Linear(config.hidden_dim, config.hidden_dim, bias=False)
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         query = self.q_proj(inputs)
@@ -39,9 +44,9 @@ class AttentionLayer(nn.Module):
             query,
             key,
             value,
-            dropout_p=0.1,
+            dropout_p=self.config.attn_dropout,
             is_causal=True,
-            scale=self.config.hidden_dim**-0.5
+            scale=self.config.attn_scale
         )
         out = self.out_proj(x)
         return out
@@ -70,24 +75,36 @@ class MicroLLM(nn.Module):
     def __init__(self, config: MicroLLMConfig) -> None:
         super().__init__()
         self.config = config
-
-        self.embed = nn.Embedding(config.vocab_size, config.hidden_dim)
+        self.wte = nn.Embedding(config.vocab_size, config.hidden_dim)
         self.decoder_layers = nn.ModuleList([
             DecoderLayer(config) for _ in range(config.num_layers)
         ])
         self.final_norm = nn.RMSNorm(config.hidden_dim)
-        self.lm_head = nn.Linear(config.hidden_dim, config.vocab_size)
+        self.lm_head = nn.Linear(config.hidden_dim, config.vocab_size, bias=False)
 
-    def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
-        x = self.embed(input_ids)
+        # initialization
+        self.lm_head.weight = self.wte.weight
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            nn.init.normal_(module.weight, mean=0.0, std=self.config.init_std)
+        elif isinstance(module, nn.Embedding):
+            nn.init.normal_(module.weight, mean=0.0, std=self.config.init_std)
+        elif isinstance(module, nn.RMSNorm):
+            nn.init.ones_(module.weight)
+
+    def forward(self, input_ids: torch.Tensor, target_ids: torch.Tensor=None) -> tuple:
+        x = self.wte(input_ids)
         for layer in self.decoder_layers:
             x = layer(x)
         x = self.final_norm(x)
         logits = self.lm_head(x)
-        return logits
-
-
-
-
-
-
+        if target_ids is not None:
+            loss = F.cross_entropy(
+                logits,
+                target_ids,
+                label_smoothing=self.config.label_smoothing_factor
+            )
+            return (logits, loss)
+        return (logits,)
