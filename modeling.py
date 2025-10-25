@@ -2,9 +2,12 @@ import torch.nn.functional as F
 import torch.nn as nn
 import torch
 
+
+
 class MicroLLMConfig(dict):
     def __getattr__(self, attr):
         return self[attr]
+
 
 
 class MLPLayer(nn.Module):
@@ -16,6 +19,7 @@ class MLPLayer(nn.Module):
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         pass
+
 
 
 class AttentionLayer(nn.Module):
@@ -43,6 +47,7 @@ class DecoderLayer(nn.Module):
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         pass
+
 
 
 class MicroLLM(nn.Module):
