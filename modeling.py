@@ -60,9 +60,9 @@ class DecoderLayer(nn.Module):
     def __init__(self, config: MicroLLMConfig) -> None:
         super().__init__()
         self.config = config
-        self.pre_attn_norm = nn.RMSNorm(config.hidden_dim, elementwise_affine=config.norm_weight)
+        self.pre_attn_norm = nn.RMSNorm(config.hidden_dim)
         self.attn_layer = AttentionLayer(config)
-        self.pre_mlp_norm = nn.RMSNorm(config.hidden_dim, elementwise_affine=config.norm_weight)
+        self.pre_mlp_norm = nn.RMSNorm(config.hidden_dim)
         self.mlp_layer = MLPLayer(config)
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
@@ -83,7 +83,7 @@ class MicroLLM(nn.Module):
         self.layers = nn.ModuleList([
             DecoderLayer(config) for _ in range(config.num_layers)
         ])
-        self.final_norm = nn.RMSNorm(config.hidden_dim, elementwise_affine=config.norm_weight)
+        self.final_norm = nn.RMSNorm(config.hidden_dim)
         self.lm_head = nn.Linear(config.hidden_dim, config.vocab_size, bias=False)
 
         self.lm_head.weight = self.wte.weight

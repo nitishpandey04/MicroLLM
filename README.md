@@ -10,7 +10,6 @@ todo:
   - add swiglu
   - add gqa
   - add rope
-  - tie embed & lm_head
   - think about tokenizer
   - get the dataset
 - others
