@@ -1,20 +1,21 @@
+from dataclasses import dataclass
 import torch.nn.functional as F
 import torch.nn as nn
 import torch
 
 
+@dataclass
 class MicroLLMConfig:
-    def __init__(self):
-        self.num_layers = 6
-        self.hidden_dim = 64
-        self.attn_dropout = 0.1
-        self.attn_scale = self.hidden_dim ** -0.5
-        self.vocab_size = 32000
-        self.label_smoothing_factor = 0.1
-        self.init_std = 0.02
+    num_layers: int = 24
+    hidden_dim: int = 128
+    num_heads: int = 8
+    attn_dropout: float = 0.1
+    vocab_size: int = 32000
+    label_smoothing_factor: float = 0.1
+    init_std: float = 0.02
 
 
-# rope
+# gqa, swiglu, rope
 class MLPLayer(nn.Module):
     def __init__(self, config: MicroLLMConfig) -> None:
         super().__init__()
@@ -37,17 +38,20 @@ class AttentionLayer(nn.Module):
         self.out_proj = nn.Linear(config.hidden_dim, config.hidden_dim, bias=False)
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
-        query = self.q_proj(inputs)
-        key = self.k_proj(inputs)
-        value = self.v_proj(inputs)
+        B, T, C = inputs.shape
+        assert self.config.hidden_dim % self.config.num_heads == 0
+        H, D = self.config.num_heads, self.config.hidden_dim // self.config.num_heads
+        query = self.q_proj(inputs).view(B, T, H, D).transpose(1, 2)
+        key = self.k_proj(inputs).view(B, T, H, D).transpose(1, 2)
+        value = self.v_proj(inputs).view(B, T, H, D).transpose(1, 2)
         x = F.scaled_dot_product_attention(
             query,
             key,
             value,
-            dropout_p=self.config.attn_dropout,
-            is_causal=True,
-            scale=self.config.attn_scale
+            dropout_p=self.config.attn_dropout if self.training else 0.0,
+            is_causal=True
         )
+        x = x.transpose(1, 2).contiguous().view(B, T, C)
         out = self.out_proj(x)
         return out
 
@@ -56,9 +60,9 @@ class DecoderLayer(nn.Module):
     def __init__(self, config: MicroLLMConfig) -> None:
         super().__init__()
         self.config = config
-        self.pre_attn_norm = nn.RMSNorm(config.hidden_dim)
+        self.pre_attn_norm = nn.RMSNorm(config.hidden_dim, elementwise_affine=config.norm_weight)
         self.attn_layer = AttentionLayer(config)
-        self.pre_mlp_norm = nn.RMSNorm(config.hidden_dim)
+        self.pre_mlp_norm = nn.RMSNorm(config.hidden_dim, elementwise_affine=config.norm_weight)
         self.mlp_layer = MLPLayer(config)
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
@@ -76,13 +80,12 @@ class MicroLLM(nn.Module):
         super().__init__()
         self.config = config
         self.wte = nn.Embedding(config.vocab_size, config.hidden_dim)
-        self.decoder_layers = nn.ModuleList([
+        self.layers = nn.ModuleList([
             DecoderLayer(config) for _ in range(config.num_layers)
         ])
-        self.final_norm = nn.RMSNorm(config.hidden_dim)
+        self.final_norm = nn.RMSNorm(config.hidden_dim, elementwise_affine=config.norm_weight)
         self.lm_head = nn.Linear(config.hidden_dim, config.vocab_size, bias=False)
 
-        # initialization
         self.lm_head.weight = self.wte.weight
         self.apply(self._init_weights)
 
@@ -96,7 +99,7 @@ class MicroLLM(nn.Module):
 
     def forward(self, input_ids: torch.Tensor, target_ids: torch.Tensor=None) -> tuple:
         x = self.wte(input_ids)
-        for layer in self.decoder_layers:
+        for layer in self.layers:
             x = layer(x)
         x = self.final_norm(x)
         logits = self.lm_head(x)

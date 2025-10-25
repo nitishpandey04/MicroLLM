@@ -5,5 +5,7 @@ description = "small language models research"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    "ipykernel>=7.0.1",
+    "numpy>=2.2.6",
     "torch>=2.9.0",
 ]
