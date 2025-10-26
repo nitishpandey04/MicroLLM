@@ -7,8 +7,8 @@ import torch
 @dataclass
 class MicroLLMConfig:
     n_layer: int = 24
-    n_embd: int = 128
-    n_head: int = 8
+    n_embd: int = 256
+    n_head: int = 16
     n_kv_head: int = 4
     attn_drop_p: float = 0.1
     vocab_size: int = 32000
@@ -28,7 +28,7 @@ def apply_rotary_emb(x, cos, sin):
     return out
 
 
-# swiglu
+# swiglu, kv cache, generate fn
 class MLPLayer(nn.Module):
     def __init__(self, config: MicroLLMConfig) -> None:
         super().__init__()

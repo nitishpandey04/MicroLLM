@@ -8,8 +8,8 @@ current aim:
 todo:
 - technical
   - add swiglu
-  - add gqa
-  - add rope
+  - add kv cache
+  - add generate fn
   - think about tokenizer
   - get the dataset
 - others
