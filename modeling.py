@@ -12,11 +12,23 @@ class MicroLLMConfig:
     n_kv_head: int = 4
     attn_drop_p: float = 0.1
     vocab_size: int = 32000
+    seq_len: int = 1024
     label_smoothing_factor: float = 0.1
     init_std: float = 0.02
 
 
-# rope, swiglu
+def apply_rotary_emb(x, cos, sin):
+    assert x.ndim == 4  # multihead attention
+    d = x.shape[3] // 2
+    x1, x2 = x[..., :d], x[..., d:] # split up last time into two halves
+    y1 = x1 * cos + x2 * sin # rotate pairs of dims
+    y2 = x1 * (-sin) + x2 * cos
+    out = torch.cat([y1, y2], 3) # re-assemble
+    out = out.to(x.dtype) # ensure input/output dtypes match
+    return out
+
+
+# swiglu
 class MLPLayer(nn.Module):
     def __init__(self, config: MicroLLMConfig) -> None:
         super().__init__()
@@ -43,11 +55,20 @@ class AttentionLayer(nn.Module):
         self.v_proj = nn.Linear(self.n_embd, self.n_kv_head * self.head_dim, bias=False)
         self.out_proj = nn.Linear(self.n_embd, self.n_embd, bias=False)
 
-    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+    def forward(self, inputs: torch.Tensor, cos_sin: tuple) -> torch.Tensor:
         B, T, C = inputs.shape
-        query = self.q_proj(inputs).view(B, T, self.n_head, self.head_dim).transpose(1, 2)
-        key = self.k_proj(inputs).view(B, T, self.n_kv_head, self.head_dim).transpose(1, 2)
-        value = self.v_proj(inputs).view(B, T, self.n_kv_head, self.head_dim).transpose(1, 2)
+        cos, sin = cos_sin
+
+        query = self.q_proj(inputs).view(B, T, self.n_head, self.head_dim)
+        key = self.k_proj(inputs).view(B, T, self.n_kv_head, self.head_dim)
+        value = self.v_proj(inputs).view(B, T, self.n_kv_head, self.head_dim)
+
+        query, key = apply_rotary_emb(query, cos, sin), apply_rotary_emb(key, cos, sin)
+
+        query = query.transpose(1, 2)
+        key = key.transpose(1, 2)
+        value = value.transpose(1, 2)
+
         x = F.scaled_dot_product_attention(
             query,
             key,
@@ -92,6 +113,14 @@ class MicroLLM(nn.Module):
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
 
         self.lm_head.weight = self.wte.weight
+        
+        # rope
+        rotary_seq_len = config.seq_len * 10
+        head_dim = config.n_embd // config.n_head
+        cos, sin = self._precompute_rope(rotary_seq_len, head_dim)
+        self.register_buffer("cos", cos, persistent=False)
+        self.register_buffer("sin", sin, persistent=False)
+
         self.apply(self._init_weights)
 
     def _init_weights(self, module):
@@ -102,10 +131,29 @@ class MicroLLM(nn.Module):
         elif isinstance(module, nn.RMSNorm):
             nn.init.ones_(module.weight)
 
+    def _precompute_rope(self, seq_len, head_dim, base=10000, device=None):
+        # autodetect the device from model embeddings
+        if device is None:
+            device = self.wte.weight.device
+        # stride the channels
+        channel_range = torch.arange(0, head_dim, 2, dtype=torch.float32, device=device)
+        inv_freq = 1.0 / (base ** (channel_range / head_dim))
+        # stride the time steps
+        t = torch.arange(seq_len, dtype=torch.float32, device=device)
+        # calculate the rotation frequencies at each (time, channel) pair
+        freqs = torch.outer(t, inv_freq)
+        cos, sin = freqs.cos(), freqs.sin()
+        cos, sin = cos.bfloat16(), sin.bfloat16() # keep them in bfloat16
+        cos, sin = cos[None, :, None, :], sin[None, :, None, :] # add batch and head dims for later broadcasting
+        return cos, sin
+
     def forward(self, input_ids: torch.Tensor, target_ids: torch.Tensor=None) -> tuple:
+        B, T = input_ids.shape
+        cos_sin = self.cos[:, :T], self.sin[:, :T]
+
         x = self.wte(input_ids)
         for layer in self.layers:
-            x = layer(x)
+            x = layer(x, cos_sin)
         x = self.final_norm(x)
         logits = self.lm_head(x)
         if target_ids is not None:
@@ -116,3 +164,4 @@ class MicroLLM(nn.Module):
             )
             return (logits, loss)
         return (logits,)
+
