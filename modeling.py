@@ -6,23 +6,24 @@ import torch
 
 @dataclass
 class MicroLLMConfig:
-    num_layers: int = 24
-    hidden_dim: int = 128
-    num_heads: int = 8
-    attn_dropout: float = 0.1
+    n_layer: int = 24
+    n_embd: int = 128
+    n_head: int = 8
+    n_kv_head: int = 4
+    attn_drop_p: float = 0.1
     vocab_size: int = 32000
     label_smoothing_factor: float = 0.1
     init_std: float = 0.02
 
 
-# gqa, swiglu, rope
+# rope, swiglu
 class MLPLayer(nn.Module):
     def __init__(self, config: MicroLLMConfig) -> None:
         super().__init__()
         self.config = config
-        self.up_proj = nn.Linear(config.hidden_dim, 4 * config.hidden_dim, bias=False)
+        self.up_proj = nn.Linear(config.n_embd, 4 * config.n_embd, bias=False)
         self.act_fn = nn.ReLU()
-        self.down_proj = nn.Linear(4 * config.hidden_dim, config.hidden_dim, bias=False)
+        self.down_proj = nn.Linear(4 * config.n_embd, config.n_embd, bias=False)
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         return self.down_proj(self.act_fn(self.up_proj(inputs)))
@@ -31,25 +32,29 @@ class MLPLayer(nn.Module):
 class AttentionLayer(nn.Module):
     def __init__(self, config: MicroLLMConfig) -> None:
         super().__init__()
-        self.config = config
-        self.q_proj = nn.Linear(config.hidden_dim, config.hidden_dim, bias=False)
-        self.k_proj = nn.Linear(config.hidden_dim, config.hidden_dim, bias=False)
-        self.v_proj = nn.Linear(config.hidden_dim, config.hidden_dim, bias=False)
-        self.out_proj = nn.Linear(config.hidden_dim, config.hidden_dim, bias=False)
+        self.n_embd = config.n_embd
+        self.n_head = config.n_head
+        self.n_kv_head = config.n_kv_head
+        self.head_dim = config.n_embd // config.n_head
+        assert self.n_embd % self.n_head == 0
+        assert self.n_kv_head <= self.n_head and self.n_head % self.n_kv_head == 0
+        self.q_proj = nn.Linear(self.n_embd, self.n_head * self.head_dim, bias=False)
+        self.k_proj = nn.Linear(self.n_embd, self.n_kv_head * self.head_dim, bias=False)
+        self.v_proj = nn.Linear(self.n_embd, self.n_kv_head * self.head_dim, bias=False)
+        self.out_proj = nn.Linear(self.n_embd, self.n_embd, bias=False)
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         B, T, C = inputs.shape
-        assert self.config.hidden_dim % self.config.num_heads == 0
-        H, D = self.config.num_heads, self.config.hidden_dim // self.config.num_heads
-        query = self.q_proj(inputs).view(B, T, H, D).transpose(1, 2)
-        key = self.k_proj(inputs).view(B, T, H, D).transpose(1, 2)
-        value = self.v_proj(inputs).view(B, T, H, D).transpose(1, 2)
+        query = self.q_proj(inputs).view(B, T, self.n_head, self.head_dim).transpose(1, 2)
+        key = self.k_proj(inputs).view(B, T, self.n_kv_head, self.head_dim).transpose(1, 2)
+        value = self.v_proj(inputs).view(B, T, self.n_kv_head, self.head_dim).transpose(1, 2)
         x = F.scaled_dot_product_attention(
             query,
             key,
             value,
-            dropout_p=self.config.attn_dropout if self.training else 0.0,
-            is_causal=True
+            dropout_p=self.config.attn_drop_p if self.training else 0.0,
+            is_causal=True,
+            enable_gqa=True
         )
         x = x.transpose(1, 2).contiguous().view(B, T, C)
         out = self.out_proj(x)
@@ -60,9 +65,9 @@ class DecoderLayer(nn.Module):
     def __init__(self, config: MicroLLMConfig) -> None:
         super().__init__()
         self.config = config
-        self.pre_attn_norm = nn.RMSNorm(config.hidden_dim)
+        self.pre_attn_norm = nn.RMSNorm(config.n_embd)
         self.attn_layer = AttentionLayer(config)
-        self.pre_mlp_norm = nn.RMSNorm(config.hidden_dim)
+        self.pre_mlp_norm = nn.RMSNorm(config.n_embd)
         self.mlp_layer = MLPLayer(config)
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
@@ -79,12 +84,12 @@ class MicroLLM(nn.Module):
     def __init__(self, config: MicroLLMConfig) -> None:
         super().__init__()
         self.config = config
-        self.wte = nn.Embedding(config.vocab_size, config.hidden_dim)
+        self.wte = nn.Embedding(config.vocab_size, config.n_embd)
         self.layers = nn.ModuleList([
-            DecoderLayer(config) for _ in range(config.num_layers)
+            DecoderLayer(config) for _ in range(config.n_layer)
         ])
-        self.final_norm = nn.RMSNorm(config.hidden_dim)
-        self.lm_head = nn.Linear(config.hidden_dim, config.vocab_size, bias=False)
+        self.final_norm = nn.RMSNorm(config.n_embd)
+        self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
 
         self.lm_head.weight = self.wte.weight
         self.apply(self._init_weights)
