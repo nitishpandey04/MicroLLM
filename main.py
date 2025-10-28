@@ -1,9 +1,13 @@
-from modeling import MicroLLM, MicroLLMConfig
+# initialize the dataloader
+# initialize the model
+# initialize the training
+# resume training from checkpoint
+# run evaluation
 
-model = MicroLLM(MicroLLMConfig())
 
-print(model)
-
-params = sum([p.numel() for p in model.parameters()]) / 1_000_000
-
-print(f"{params=}")
+"""
+the training will be started from here using the trainer
+we don't have to initialize the dataloader here, directly do it in trainer
+just initialize the trainer object and start the training from this file or give cli access
+this file can also be called from a bash script (like in nanochat repo)
+"""

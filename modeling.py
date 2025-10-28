@@ -2,19 +2,23 @@ from dataclasses import dataclass
 import torch.nn.functional as F
 import torch.nn as nn
 import torch
+W_H_RATIO = 32
+INIT_STD = 0.2
+LABEL_SMOOTHING_FACTOR = 0.1
+ATTN_DROP_P = 0.1
 
 
 @dataclass
 class MicroLLMConfig:
     n_layer: int = 24
-    n_embd: int = 256
+    n_embd: int = 256 # calculate using W_H_RATIO
     n_head: int = 16
     n_kv_head: int = 4
-    attn_drop_p: float = 0.1
-    vocab_size: int = 32000
-    seq_len: int = 1024
-    label_smoothing_factor: float = 0.1
-    init_std: float = 0.02
+    attn_drop_p: float = 0.1 # global var
+    vocab_size: int = 32000 # global var
+    seq_len: int = 1024 # global var
+    label_smoothing_factor: float = 0.1 # global var
+    init_std: float = 0.02 # global var
 
 
 def apply_rotary_emb(x, cos, sin):
