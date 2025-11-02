@@ -154,7 +154,7 @@ class MicroLLM(nn.Module):
     def forward(self, input_ids: torch.Tensor, target_ids: torch.Tensor=None) -> tuple:
         B, T = input_ids.shape
         cos_sin = self.cos[:, :T], self.sin[:, :T]
-
+        
         x = self.wte(input_ids)
         for layer in self.layers:
             x = layer(x, cos_sin)
