@@ -40,7 +40,7 @@ class MLPLayer(nn.Module):
         self.up_proj = nn.Linear(config.n_embd, 4 * config.n_embd, bias=False)
         self.act_fn = nn.ReLU()
         self.down_proj = nn.Linear(4 * config.n_embd, config.n_embd, bias=False)
-
+        
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         return self.down_proj(self.act_fn(self.up_proj(inputs)))
 
