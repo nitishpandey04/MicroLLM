@@ -2,23 +2,18 @@ from dataclasses import dataclass
 import torch.nn.functional as F
 import torch.nn as nn
 import torch
-W_H_RATIO = 32
-INIT_STD = 0.2
-LABEL_SMOOTHING_FACTOR = 0.1
-ATTN_DROP_P = 0.1
 
 
 @dataclass
 class MicroLLMConfig:
-    n_layer: int = 24
-    n_embd: int = 256 # calculate using W_H_RATIO
+    n_layers: int = 24
+    n_embd: int = 1024
     n_head: int = 16
     n_kv_head: int = 4
-    attn_drop_p: float = 0.1 # global var
-    vocab_size: int = 32000 # global var
-    seq_len: int = 1024 # global var
-    label_smoothing_factor: float = 0.1 # global var
-    init_std: float = 0.02 # global var
+    attn_drop_p: float = 0.1
+    vocab_size: int = 32768
+    max_seq_len: int = 1024
+    init_std: float = 0.02
 
 
 def apply_rotary_emb(x, cos, sin):
@@ -48,6 +43,7 @@ class MLPLayer(nn.Module):
 class AttentionLayer(nn.Module):
     def __init__(self, config: MicroLLMConfig) -> None:
         super().__init__()
+        self.config = config
         self.n_embd = config.n_embd
         self.n_head = config.n_head
         self.n_kv_head = config.n_kv_head
@@ -95,9 +91,9 @@ class DecoderLayer(nn.Module):
         self.pre_mlp_norm = nn.RMSNorm(config.n_embd)
         self.mlp_layer = MLPLayer(config)
 
-    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+    def forward(self, inputs: torch.Tensor, cos_sin: tuple) -> torch.Tensor:
         res = inputs
-        x = self.attn_layer(self.pre_attn_norm(res))
+        x = self.attn_layer(self.pre_attn_norm(res), cos_sin)
         x += res
         res = x
         x = self.mlp_layer(self.pre_mlp_norm(res))
@@ -111,7 +107,7 @@ class MicroLLM(nn.Module):
         self.config = config
         self.wte = nn.Embedding(config.vocab_size, config.n_embd)
         self.layers = nn.ModuleList([
-            DecoderLayer(config) for _ in range(config.n_layer)
+            DecoderLayer(config) for _ in range(config.n_layers)
         ])
         self.final_norm = nn.RMSNorm(config.n_embd)
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
@@ -119,7 +115,7 @@ class MicroLLM(nn.Module):
         self.lm_head.weight = self.wte.weight
         
         # rope
-        rotary_seq_len = config.seq_len * 10
+        rotary_seq_len = config.max_seq_len * 10
         head_dim = config.n_embd // config.n_head
         cos, sin = self._precompute_rope(rotary_seq_len, head_dim)
         self.register_buffer("cos", cos, persistent=False)
@@ -135,7 +131,7 @@ class MicroLLM(nn.Module):
         elif isinstance(module, nn.RMSNorm):
             nn.init.ones_(module.weight)
 
-    def _precompute_rope(self, seq_len, head_dim, base=10000, device=None):
+    def _precompute_rope(self, max_seq_len, head_dim, base=10000, device=None):
         # autodetect the device from model embeddings
         if device is None:
             device = self.wte.weight.device
@@ -143,7 +139,7 @@ class MicroLLM(nn.Module):
         channel_range = torch.arange(0, head_dim, 2, dtype=torch.float32, device=device)
         inv_freq = 1.0 / (base ** (channel_range / head_dim))
         # stride the time steps
-        t = torch.arange(seq_len, dtype=torch.float32, device=device)
+        t = torch.arange(max_seq_len, dtype=torch.float32, device=device)
         # calculate the rotation frequencies at each (time, channel) pair
         freqs = torch.outer(t, inv_freq)
         cos, sin = freqs.cos(), freqs.sin()
@@ -151,7 +147,7 @@ class MicroLLM(nn.Module):
         cos, sin = cos[None, :, None, :], sin[None, :, None, :] # add batch and head dims for later broadcasting
         return cos, sin
 
-    def forward(self, input_ids: torch.Tensor, target_ids: torch.Tensor=None) -> tuple:
+    def forward(self, input_ids: torch.Tensor) -> tuple:
         B, T = input_ids.shape
         cos_sin = self.cos[:, :T], self.sin[:, :T]
         
@@ -160,12 +156,4 @@ class MicroLLM(nn.Module):
             x = layer(x, cos_sin)
         x = self.final_norm(x)
         logits = self.lm_head(x)
-        if target_ids is not None:
-            loss = F.cross_entropy(
-                logits,
-                target_ids,
-                label_smoothing=self.config.label_smoothing_factor
-            )
-            return (logits, loss)
-        return (logits,)
-
+        return logits

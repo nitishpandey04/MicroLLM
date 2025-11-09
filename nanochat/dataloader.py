@@ -1,7 +1,5 @@
-from collections import deque
-
 import torch
-
+from collections import deque
 from nanochat.common import get_dist_info
 from nanochat.dataset import parquets_iter_batched
 from nanochat.tokenizer import get_tokenizer

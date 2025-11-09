@@ -1,34 +1,51 @@
 from dataclasses import dataclass
+from modeling import MicroLLM, MicroLLMConfig
+from typing import Generator
+import torch.nn.functional as F
+from torch.optim import AdamW
+from nanochat.dataloader import tokenizing_distributed_data_loader
 
 @dataclass
 class TrainArgs:
+    num_steps: 5000
     batch_size: int = 32
-    epochs: int = 1
-    lr: float = 1e-4
-    device: int = 0
-    world_size: int = 1
+    max_seq_len: int = 512
+    lr: float = 1e-5
+    label_smoothing: float = 0.01
+    device: str = "cuda"
 
 class Trainer:
-    def __init__(self, config: TrainArgs) -> None:
-        # initialize model
-        # initialize dataloader
-        # load and save checkpoints
-        pass
+    def __init__(self, model: MicroLLM, args: TrainArgs) -> None:
+        self.model = model
+        self.args = args
+        self.optimizer = AdamW(model.parameters(), lr=args.lr)
+        self._prepare_dataloader()
 
     def train(self):
-        # training loop
-        pass
+        for step in range(self.args.num_steps):
+            src, tgt = next(self.dataloader)
+            B, T = src.shape
+            logits = self.model(src)
 
-    def load_snapshot(self):
-        # load a checkpoint
-        pass
+            loss = F.cross_entropy(
+                logits.view(B * T, -1),
+                tgt.view(B * T,),
+                label_smoothing=self.args.label_smoothing
+            )
 
-    def save_snapshot(self):
-        # save a checkpoint
-        pass
+            self.optimizer.zero_grad()
+            loss.backward()
+            self.optimizer.step()
 
-"""
-design:
-trainer is the work horse of model training
-it will initialize the model, dataloader, run training, save and load checkpoints
-"""
+            if step % 100 == 0:
+                print(f"step: {step + 1:2d} | loss: {loss:.5f}")
+
+    def _prepare_dataloader(self):
+        self.dataloader = tokenizing_distributed_data_loader(
+            B=self.args.batch_size,
+            T=self.args.max_seq_len,
+            split="train",
+            tokenizer_threads=4,
+            tokenizer_batch_size=64,
+            device=self.args.device
+        )
