@@ -1,4 +1,4 @@
-# MicroLLM
+# microLLM
 small language models research
 
 Aim:
